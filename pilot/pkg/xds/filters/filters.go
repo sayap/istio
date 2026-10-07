@@ -68,6 +68,10 @@ const (
 	// EnvoyJwtFilterPayload is the struct field for the payload in dynamic metadata in Envoy JWT filter.
 	EnvoyJwtFilterPayload = "payload"
 
+	// EnvoyJwtFilterVerificationFailure is the fixed dynamic metadata key for the
+	// verification failure status and message in Envoy JWT filter.
+	EnvoyJwtFilterVerificationFailure = "istio_jwt_verification_failure"
+
 	PeerMetadataTypeURL              = "type.googleapis.com/io.istio.http.peer_metadata.Config"
 	MetadataExchangeTypeURL          = "type.googleapis.com/envoy.tcp.metadataexchange.config.MetadataExchange"
 	HBONEListenerPeerMetadataTypeURL = "type.googleapis.com/envoy.extensions.network_filters.peer_metadata.Config"

@@ -21,6 +21,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"k8s.io/apimachinery/pkg/util/rand"
 
 	"istio.io/istio/pkg/config/protocol"
 	"istio.io/istio/pkg/http/headers"
@@ -33,6 +36,7 @@ import (
 	"istio.io/istio/pkg/test/framework/components/istio"
 	"istio.io/istio/pkg/test/framework/components/istio/ingress"
 	"istio.io/istio/pkg/test/framework/label"
+	"istio.io/istio/pkg/test/util/retry"
 	"istio.io/istio/tests/common/jwt"
 )
 
@@ -311,6 +315,251 @@ func TestRequestAuthentication(t *testing.T) {
 				},
 			}))
 
+			// presence: IGNORED rejects neither missing nor failed tokens, so all cases
+			// below pass, unlike presence: OPTIONAL, which still rejects failed ones.
+			t.NewSubTest("ignored-multi-jwt").Run(newTest("testdata/requestauthn/ignored-multi-jwt.yaml.tmpl", []testCase{
+				{
+					name: "both-tokens-valid",
+					customizeCall: func(t framework.TestContext, from echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/both-tokens-valid"
+						opts.HTTP.Headers = headers.New().
+							WithAuthz(jwt.TokenIssuer1).
+							With("x-scope-token", jwt.TokenIssuer2).
+							Build()
+						opts.Check = check.And(
+							check.OK(),
+							check.ReachedTargetClusters(t))
+					},
+				},
+				{
+					name: "only-primary-token",
+					customizeCall: func(t framework.TestContext, from echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/only-primary-token"
+						opts.HTTP.Headers = headers.New().WithAuthz(jwt.TokenIssuer1).Build()
+						opts.Check = check.And(
+							check.OK(),
+							check.ReachedTargetClusters(t))
+					},
+				},
+				{
+					name: "only-scope-token",
+					customizeCall: func(t framework.TestContext, from echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/only-scope-token"
+						opts.HTTP.Headers = headers.New().
+							With("x-scope-token", jwt.TokenIssuer2).
+							Build()
+						opts.Check = check.And(
+							check.OK(),
+							check.ReachedTargetClusters(t))
+					},
+				},
+				{
+					name: "no-tokens",
+					customizeCall: func(t framework.TestContext, from echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/no-tokens"
+						opts.Check = check.And(
+							check.OK(),
+							check.ReachedTargetClusters(t))
+					},
+				},
+				{
+					// An expired token fails verification but is not rejected under IGNORED.
+					name: "primary-valid-scope-expired",
+					customizeCall: func(t framework.TestContext, from echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/primary-valid-scope-expired"
+						opts.HTTP.Headers = headers.New().
+							WithAuthz(jwt.TokenIssuer1).
+							With("x-scope-token", jwt.TokenExpired).
+							Build()
+						opts.Check = check.And(
+							check.OK(),
+							check.ReachedTargetClusters(t))
+					},
+				},
+				{
+					name: "primary-expired-scope-valid",
+					customizeCall: func(t framework.TestContext, from echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/primary-expired-scope-valid"
+						opts.HTTP.Headers = headers.New().
+							WithAuthz(jwt.TokenExpired).
+							With("x-scope-token", jwt.TokenIssuer2).
+							Build()
+						opts.Check = check.And(
+							check.OK(),
+							check.ReachedTargetClusters(t))
+					},
+				},
+			}))
+
+			t.NewSubTest("ignored-mixed-jwt").Run(newTest("testdata/requestauthn/ignored-mixed-jwt.yaml.tmpl", []testCase{
+				{
+					name: "both-tokens-valid",
+					customizeCall: func(t framework.TestContext, from echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/both-tokens-valid"
+						opts.HTTP.Headers = headers.New().
+							WithAuthz(jwt.TokenIssuer1).
+							With("x-scope-token", jwt.TokenIssuer2).
+							Build()
+						opts.Check = check.And(
+							check.OK(),
+							check.ReachedTargetClusters(t))
+					},
+				},
+				{
+					// The IGNORED rule tolerates the missing scope token.
+					name: "only-primary-token",
+					customizeCall: func(t framework.TestContext, from echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/only-primary-token"
+						opts.HTTP.Headers = headers.New().WithAuthz(jwt.TokenIssuer1).Build()
+						opts.Check = check.And(
+							check.OK(),
+							check.ReachedTargetClusters(t))
+					},
+				},
+				{
+					name: "only-scope-token",
+					customizeCall: func(_ framework.TestContext, _ echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/only-scope-token"
+						opts.HTTP.Headers = headers.New().
+							With("x-scope-token", jwt.TokenIssuer2).
+							Build()
+						opts.Check = check.Status(http.StatusUnauthorized)
+					},
+				},
+				{
+					name: "no-tokens",
+					customizeCall: func(_ framework.TestContext, _ echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/no-tokens"
+						opts.Check = check.Status(http.StatusUnauthorized)
+					},
+				},
+				{
+					// The REQUIRED rule still rejects a failed primary token.
+					name: "primary-expired-scope-valid",
+					customizeCall: func(_ framework.TestContext, _ echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/primary-expired-scope-valid"
+						opts.HTTP.Headers = headers.New().
+							WithAuthz(jwt.TokenExpired).
+							With("x-scope-token", jwt.TokenIssuer2).
+							Build()
+						opts.Check = check.Status(http.StatusUnauthorized)
+					},
+				},
+				{
+					// Unlike presence: OPTIONAL (see required-mixed-jwt), the IGNORED rule
+					// tolerates the failed scope token.
+					name: "primary-valid-scope-expired",
+					customizeCall: func(t framework.TestContext, from echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/primary-valid-scope-expired"
+						opts.HTTP.Headers = headers.New().
+							WithAuthz(jwt.TokenIssuer1).
+							With("x-scope-token", jwt.TokenExpired).
+							Build()
+						opts.Check = check.And(
+							check.OK(),
+							check.ReachedTargetClusters(t))
+					},
+				},
+			}))
+
+			// presence: IGNORED with failedStatusInMetadata: a failed token passes the JWT
+			// filter and is denied by the AuthorizationPolicy (403) instead of by the filter
+			// itself (401), and a valid token still populates the principal. failedStatusInMetadata
+			// exercises the failure metadata end-to-end; its content is only asserted at the
+			// config level (see policy_applier_test.go).
+			t.NewSubTest("ignored-authz").Run(newTest("testdata/requestauthn/ignored-authz.yaml.tmpl", []testCase{
+				{
+					name: "valid-token",
+					customizeCall: func(t framework.TestContext, from echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/valid-token"
+						opts.HTTP.Headers = headers.New().WithAuthz(jwt.TokenIssuer1).Build()
+						opts.Check = check.And(
+							check.OK(),
+							check.ReachedTargetClusters(t))
+					},
+				},
+				{
+					// 403, not 401: the JWT filter no longer rejects the failed token; the
+					// AuthorizationPolicy denies it instead, as no principal was populated.
+					name: "expired-token",
+					customizeCall: func(_ framework.TestContext, _ echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/expired-token"
+						opts.HTTP.Headers = headers.New().WithAuthz(jwt.TokenExpired).Build()
+						opts.Check = check.Status(http.StatusForbidden)
+					},
+				},
+				{
+					name: "no-token",
+					customizeCall: func(_ framework.TestContext, _ echo.Instance, opts *echo.CallOptions) {
+						opts.HTTP.Path = "/no-token"
+						opts.Check = check.Status(http.StatusForbidden)
+					},
+				},
+			}))
+
+			// presence: IGNORED with failedStatusInMetadata: the verification failure is
+			// written to dynamic metadata under envoy.filters.http.jwt_authn and surfaced
+			// through the jwt-failure-log access log provider (see main_test.go), while
+			// the request itself is never rejected.
+			t.NewSubTest("ignored-failure-metadata").Run(func(t framework.TestContext) {
+				config.New(t).
+					Source(config.File("testdata/requestauthn/ignored-failure-metadata.yaml.tmpl").WithParams(param.Params{
+						"JWTServer": jwtServer,
+					})).
+					BuildAll(nil, apps.Ns1.All).
+					Apply()
+
+				newTrafficTest(t, apps.Ns1.All.Instances()).Run(func(t framework.TestContext, from echo.Instance, to echo.Target) {
+					if !to.Config().HasSidecar() {
+						// Without a sidecar there is no jwt_authn filter at all.
+						return
+					}
+					for _, c := range []struct {
+						name       string
+						authzToken string // token presented on the Authorization header; "" for none
+						failureMsg string // expected failure message in the metadata; "" for none
+					}{
+						{name: "valid-token", authzToken: jwt.TokenIssuer1},
+						{name: "expired-token", authzToken: jwt.TokenExpired, failureMsg: "Jwt is expired"},
+						{name: "no-token", failureMsg: "Jwt is missing"},
+					} {
+						t.NewSubTest(c.name).Run(func(t framework.TestContext) {
+							opts := echo.CallOptions{
+								To: to,
+								Port: echo.Port{
+									Name: "http",
+								},
+							}
+							if c.authzToken != "" {
+								opts.HTTP.Headers = headers.New().WithAuthz(c.authzToken).Build()
+							}
+							opts.Check = check.And(
+								check.OK(),
+								check.ReachedTargetClusters(t))
+							retry.UntilSuccessOrFail(t, func() error {
+								// Unique path per attempt, so only requests made after the
+								// access log and jwt rules are propagated are matched.
+								path := "/" + rand.String(16)
+								opts.HTTP.Path = path
+								if _, err := from.Call(opts); err != nil {
+									return err
+								}
+								// The call succeeded; poll for its access log line without
+								// re-calling, to tolerate the access log flush delay.
+								var lastErr error
+								if err := retry.Until(func() bool {
+									lastErr = verifyFailureMetadata(t, to, path, c.failureMsg)
+									return lastErr == nil
+								}, retry.Timeout(10*time.Second), retry.Delay(500*time.Millisecond)); err != nil {
+									return lastErr
+								}
+								return nil
+							}, retry.Timeout(60*time.Second), retry.Delay(500*time.Millisecond))
+						})
+					}
+				})
+			})
+
 			t.NewSubTest("authn-authz").Run(newTest("testdata/requestauthn/authn-authz.yaml.tmpl", []testCase{
 				{
 					name: "valid-token",
@@ -536,6 +785,59 @@ func TestRequestAuthentication(t *testing.T) {
 				},
 			}))
 		})
+}
+
+// verifyFailureMetadata checks the target's sidecar access logs (the jwt-failure-log
+// provider, see main_test.go) for the line emitted for the given request path and
+// asserts the JWT verification failure metadata. An empty wantFailure asserts that
+// no failure was recorded. It does not retry; the caller is expected to retry until
+// the access log config is propagated.
+func verifyFailureMetadata(t framework.TestContext, to echo.Target, path, wantFailure string) error {
+	var lines []string
+	vm := to.Config().IsVM()
+	for _, w := range to.WorkloadsOrFail(t) {
+		var logs string
+		if vm {
+			// VM sidecars run via istio-sidecar.deb, whose start script redirects
+			// Envoy output (including /dev/stdout access logs) to
+			// /var/log/istio/istio.log instead of the container log.
+			stdout, stderr, err := w.Cluster().PodExec(w.PodName(), to.NamespaceName(), "istio-proxy", "cat /var/log/istio/istio.log")
+			if err != nil {
+				return fmt.Errorf("failed reading /var/log/istio/istio.log: %v, %s", err, stderr)
+			}
+			logs = stdout
+		} else {
+			var err error
+			logs, err = w.Sidecar().Logs()
+			if err != nil {
+				return fmt.Errorf("failed getting logs: %v", err)
+			}
+		}
+		for _, line := range strings.Split(logs, "\n") {
+			// Only lines from the jwt-failure-log provider, which start with the
+			// request path; other access log lines and proxy output start with
+			// a timestamp.
+			if strings.HasPrefix(line, path) {
+				lines = append(lines, line)
+			}
+		}
+	}
+	if len(lines) == 0 {
+		return fmt.Errorf("no jwt-failure-log line found for %s yet", path)
+	}
+	for _, line := range lines {
+		// The log line is "<path> <failure-metadata-or-dash>" (see the
+		// jwt-failure-log provider format).
+		meta := strings.TrimSpace(strings.TrimPrefix(line, path))
+		if wantFailure == "" {
+			if strings.Contains(meta, "message") {
+				return fmt.Errorf("expected no failure metadata for %s, got: %s", path, meta)
+			}
+		} else if !strings.Contains(meta, wantFailure) {
+			return fmt.Errorf("expected failure metadata %q for %s, got: %s", wantFailure, path, meta)
+		}
+	}
+	return nil
 }
 
 // TestIngressRequestAuthentication tests beta authn policy for jwt on ingress.

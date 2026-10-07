@@ -36,6 +36,7 @@ import (
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pilot/pkg/model/test"
 	"istio.io/istio/pilot/pkg/util/protoconv"
+	"istio.io/istio/pilot/pkg/xds/filters"
 	"istio.io/istio/pkg/config"
 	"istio.io/istio/pkg/config/host"
 	"istio.io/istio/pkg/jwt"
@@ -977,6 +978,10 @@ func TestConvertToEnvoyJwtConfig(t *testing.T) {
 
 	jwksURI := ms.URL + "/oauth2/v3/certs"
 
+	// Rules are passed to convertToEnvoyJwtConfig as-is, so the generated
+	// provider name origins-N follows the input order of each case, not the
+	// alphabetical issuer sort that newPolicyApplier applies in the actual
+	// config generation path.
 	cases := []struct {
 		name     string
 		in       []*v1beta1.JWTRule
@@ -1387,6 +1392,174 @@ func TestConvertToEnvoyJwtConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "Single JWT rule with presence=IGNORED — OR(provider, allow_missing_or_failed)",
+			in: []*v1beta1.JWTRule{
+				{
+					Issuer:   "https://secret.foo.com",
+					Jwks:     "jwks-inline-data",
+					Presence: v1beta1.JWTRule_IGNORED,
+				},
+			},
+			expected: &envoy_jwt.JwtAuthentication{
+				Rules: []*envoy_jwt.RequirementRule{
+					{
+						Match: &route.RouteMatch{
+							PathSpecifier: &route.RouteMatch_Prefix{
+								Prefix: "/",
+							},
+						},
+						RequirementType: &envoy_jwt.RequirementRule_Requires{
+							Requires: &envoy_jwt.JwtRequirement{
+								RequiresType: &envoy_jwt.JwtRequirement_RequiresAny{
+									RequiresAny: &envoy_jwt.JwtRequirementOrList{
+										Requirements: []*envoy_jwt.JwtRequirement{
+											{
+												RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
+													ProviderName: "origins-0",
+												},
+											},
+											{
+												RequiresType: &envoy_jwt.JwtRequirement_AllowMissingOrFailed{
+													AllowMissingOrFailed: &emptypb.Empty{},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				Providers: map[string]*envoy_jwt.JwtProvider{
+					"origins-0": {
+						Issuer: "https://secret.foo.com",
+						JwksSourceSpecifier: &envoy_jwt.JwtProvider_LocalJwks{
+							LocalJwks: &core.DataSource{
+								Specifier: &core.DataSource_InlineString{
+									InlineString: "jwks-inline-data",
+								},
+							},
+						},
+						Forward:           false,
+						PayloadInMetadata: "payload",
+						NormalizePayloadInMetadata: &envoy_jwt.JwtProvider_NormalizePayload{
+							SpaceDelimitedClaims: buildSpaceDelimitedClaims(nil),
+						},
+					},
+				},
+				BypassCorsPreflight: true,
+			},
+		},
+		{
+			name: "Single JWT rule with presence=REQUIRED and failedStatusInMetadata",
+			in: []*v1beta1.JWTRule{
+				{
+					Issuer:                 "https://secret.foo.com",
+					Jwks:                   "jwks-inline-data",
+					Presence:               v1beta1.JWTRule_REQUIRED,
+					FailedStatusInMetadata: true,
+				},
+			},
+			expected: &envoy_jwt.JwtAuthentication{
+				Rules: []*envoy_jwt.RequirementRule{
+					{
+						Match: &route.RouteMatch{
+							PathSpecifier: &route.RouteMatch_Prefix{
+								Prefix: "/",
+							},
+						},
+						RequirementType: &envoy_jwt.RequirementRule_Requires{
+							Requires: &envoy_jwt.JwtRequirement{
+								RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
+									ProviderName: "origins-0",
+								},
+							},
+						},
+					},
+				},
+				Providers: map[string]*envoy_jwt.JwtProvider{
+					"origins-0": {
+						Issuer: "https://secret.foo.com",
+						JwksSourceSpecifier: &envoy_jwt.JwtProvider_LocalJwks{
+							LocalJwks: &core.DataSource{
+								Specifier: &core.DataSource_InlineString{
+									InlineString: "jwks-inline-data",
+								},
+							},
+						},
+						Forward:                false,
+						PayloadInMetadata:      "payload",
+						FailedStatusInMetadata: filters.EnvoyJwtFilterVerificationFailure,
+						NormalizePayloadInMetadata: &envoy_jwt.JwtProvider_NormalizePayload{
+							SpaceDelimitedClaims: buildSpaceDelimitedClaims(nil),
+						},
+					},
+				},
+				BypassCorsPreflight: true,
+			},
+		},
+		{
+			name: "Single JWT rule with presence=IGNORED and failedStatusInMetadata",
+			in: []*v1beta1.JWTRule{
+				{
+					Issuer:                 "https://secret.foo.com",
+					Jwks:                   "jwks-inline-data",
+					Presence:               v1beta1.JWTRule_IGNORED,
+					FailedStatusInMetadata: true,
+				},
+			},
+			expected: &envoy_jwt.JwtAuthentication{
+				Rules: []*envoy_jwt.RequirementRule{
+					{
+						Match: &route.RouteMatch{
+							PathSpecifier: &route.RouteMatch_Prefix{
+								Prefix: "/",
+							},
+						},
+						RequirementType: &envoy_jwt.RequirementRule_Requires{
+							Requires: &envoy_jwt.JwtRequirement{
+								RequiresType: &envoy_jwt.JwtRequirement_RequiresAny{
+									RequiresAny: &envoy_jwt.JwtRequirementOrList{
+										Requirements: []*envoy_jwt.JwtRequirement{
+											{
+												RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
+													ProviderName: "origins-0",
+												},
+											},
+											{
+												RequiresType: &envoy_jwt.JwtRequirement_AllowMissingOrFailed{
+													AllowMissingOrFailed: &emptypb.Empty{},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				Providers: map[string]*envoy_jwt.JwtProvider{
+					"origins-0": {
+						Issuer: "https://secret.foo.com",
+						JwksSourceSpecifier: &envoy_jwt.JwtProvider_LocalJwks{
+							LocalJwks: &core.DataSource{
+								Specifier: &core.DataSource_InlineString{
+									InlineString: "jwks-inline-data",
+								},
+							},
+						},
+						Forward:                false,
+						PayloadInMetadata:      "payload",
+						FailedStatusInMetadata: filters.EnvoyJwtFilterVerificationFailure,
+						NormalizePayloadInMetadata: &envoy_jwt.JwtProvider_NormalizePayload{
+							SpaceDelimitedClaims: buildSpaceDelimitedClaims(nil),
+						},
+					},
+				},
+				BypassCorsPreflight: true,
+			},
+		},
+		{
 			name: "Multiple JWT rules, all REQUIRED — AND(P1, P2)",
 			in: []*v1beta1.JWTRule{
 				{
@@ -1421,6 +1594,111 @@ func TestConvertToEnvoyJwtConfig(t *testing.T) {
 											{
 												RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
 													ProviderName: "origins-1",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				Providers: map[string]*envoy_jwt.JwtProvider{
+					"origins-0": {
+						Issuer: "https://idp.example.com",
+						JwksSourceSpecifier: &envoy_jwt.JwtProvider_LocalJwks{
+							LocalJwks: &core.DataSource{
+								Specifier: &core.DataSource_InlineString{
+									InlineString: "jwks-idp",
+								},
+							},
+						},
+						Forward:           false,
+						PayloadInMetadata: "payload",
+						NormalizePayloadInMetadata: &envoy_jwt.JwtProvider_NormalizePayload{
+							SpaceDelimitedClaims: buildSpaceDelimitedClaims(nil),
+						},
+					},
+					"origins-1": {
+						Issuer: "https://scope.example.com",
+						JwksSourceSpecifier: &envoy_jwt.JwtProvider_LocalJwks{
+							LocalJwks: &core.DataSource{
+								Specifier: &core.DataSource_InlineString{
+									InlineString: "jwks-scope",
+								},
+							},
+						},
+						Forward:           false,
+						PayloadInMetadata: "payload",
+						NormalizePayloadInMetadata: &envoy_jwt.JwtProvider_NormalizePayload{
+							SpaceDelimitedClaims: buildSpaceDelimitedClaims(nil),
+						},
+					},
+				},
+				BypassCorsPreflight: true,
+			},
+		},
+		{
+			name: "Multiple JWT rules, all IGNORED — AND(OR(P1, allow_missing_or_failed), OR(P2, allow_missing_or_failed))",
+			in: []*v1beta1.JWTRule{
+				{
+					Issuer:   "https://idp.example.com",
+					Jwks:     "jwks-idp",
+					Presence: v1beta1.JWTRule_IGNORED,
+				},
+				{
+					Issuer:   "https://scope.example.com",
+					Jwks:     "jwks-scope",
+					Presence: v1beta1.JWTRule_IGNORED,
+				},
+			},
+			expected: &envoy_jwt.JwtAuthentication{
+				Rules: []*envoy_jwt.RequirementRule{
+					{
+						Match: &route.RouteMatch{
+							PathSpecifier: &route.RouteMatch_Prefix{
+								Prefix: "/",
+							},
+						},
+						RequirementType: &envoy_jwt.RequirementRule_Requires{
+							Requires: &envoy_jwt.JwtRequirement{
+								RequiresType: &envoy_jwt.JwtRequirement_RequiresAll{
+									RequiresAll: &envoy_jwt.JwtRequirementAndList{
+										Requirements: []*envoy_jwt.JwtRequirement{
+											{
+												RequiresType: &envoy_jwt.JwtRequirement_RequiresAny{
+													RequiresAny: &envoy_jwt.JwtRequirementOrList{
+														Requirements: []*envoy_jwt.JwtRequirement{
+															{
+																RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
+																	ProviderName: "origins-0",
+																},
+															},
+															{
+																RequiresType: &envoy_jwt.JwtRequirement_AllowMissingOrFailed{
+																	AllowMissingOrFailed: &emptypb.Empty{},
+																},
+															},
+														},
+													},
+												},
+											},
+											{
+												RequiresType: &envoy_jwt.JwtRequirement_RequiresAny{
+													RequiresAny: &envoy_jwt.JwtRequirementOrList{
+														Requirements: []*envoy_jwt.JwtRequirement{
+															{
+																RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
+																	ProviderName: "origins-1",
+																},
+															},
+															{
+																RequiresType: &envoy_jwt.JwtRequirement_AllowMissingOrFailed{
+																	AllowMissingOrFailed: &emptypb.Empty{},
+																},
+															},
+														},
+													},
 												},
 											},
 										},
@@ -1558,6 +1836,98 @@ func TestConvertToEnvoyJwtConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "Multiple JWT rules, mixed REQUIRED then IGNORED — AND(P1, OR(P2, allow_missing_or_failed))",
+			in: []*v1beta1.JWTRule{
+				{
+					Issuer:   "https://idp.example.com",
+					Jwks:     "jwks-idp",
+					Presence: v1beta1.JWTRule_REQUIRED,
+				},
+				{
+					Issuer:   "https://scope.example.com",
+					Jwks:     "jwks-scope",
+					Presence: v1beta1.JWTRule_IGNORED,
+				},
+			},
+			expected: &envoy_jwt.JwtAuthentication{
+				Rules: []*envoy_jwt.RequirementRule{
+					{
+						Match: &route.RouteMatch{
+							PathSpecifier: &route.RouteMatch_Prefix{
+								Prefix: "/",
+							},
+						},
+						RequirementType: &envoy_jwt.RequirementRule_Requires{
+							Requires: &envoy_jwt.JwtRequirement{
+								RequiresType: &envoy_jwt.JwtRequirement_RequiresAll{
+									RequiresAll: &envoy_jwt.JwtRequirementAndList{
+										Requirements: []*envoy_jwt.JwtRequirement{
+											{
+												RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
+													ProviderName: "origins-0",
+												},
+											},
+											{
+												RequiresType: &envoy_jwt.JwtRequirement_RequiresAny{
+													RequiresAny: &envoy_jwt.JwtRequirementOrList{
+														Requirements: []*envoy_jwt.JwtRequirement{
+															{
+																RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
+																	ProviderName: "origins-1",
+																},
+															},
+															{
+																RequiresType: &envoy_jwt.JwtRequirement_AllowMissingOrFailed{
+																	AllowMissingOrFailed: &emptypb.Empty{},
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				Providers: map[string]*envoy_jwt.JwtProvider{
+					"origins-0": {
+						Issuer: "https://idp.example.com",
+						JwksSourceSpecifier: &envoy_jwt.JwtProvider_LocalJwks{
+							LocalJwks: &core.DataSource{
+								Specifier: &core.DataSource_InlineString{
+									InlineString: "jwks-idp",
+								},
+							},
+						},
+						Forward:           false,
+						PayloadInMetadata: "payload",
+						NormalizePayloadInMetadata: &envoy_jwt.JwtProvider_NormalizePayload{
+							SpaceDelimitedClaims: buildSpaceDelimitedClaims(nil),
+						},
+					},
+					"origins-1": {
+						Issuer: "https://scope.example.com",
+						JwksSourceSpecifier: &envoy_jwt.JwtProvider_LocalJwks{
+							LocalJwks: &core.DataSource{
+								Specifier: &core.DataSource_InlineString{
+									InlineString: "jwks-scope",
+								},
+							},
+						},
+						Forward:           false,
+						PayloadInMetadata: "payload",
+						NormalizePayloadInMetadata: &envoy_jwt.JwtProvider_NormalizePayload{
+							SpaceDelimitedClaims: buildSpaceDelimitedClaims(nil),
+						},
+					},
+				},
+				BypassCorsPreflight: true,
+			},
+		},
+		{
 			name: "Multiple JWT rules, mixed OPTIONAL then REQUIRED — AND(OR(P1, allow_missing), P2)",
 			in: []*v1beta1.JWTRule{
 				{
@@ -1605,6 +1975,125 @@ func TestConvertToEnvoyJwtConfig(t *testing.T) {
 											{
 												RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
 													ProviderName: "origins-1",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				Providers: map[string]*envoy_jwt.JwtProvider{
+					"origins-0": {
+						Issuer: "https://scope.example.com",
+						JwksSourceSpecifier: &envoy_jwt.JwtProvider_LocalJwks{
+							LocalJwks: &core.DataSource{
+								Specifier: &core.DataSource_InlineString{
+									InlineString: "jwks-scope",
+								},
+							},
+						},
+						Forward:           false,
+						PayloadInMetadata: "payload",
+						NormalizePayloadInMetadata: &envoy_jwt.JwtProvider_NormalizePayload{
+							SpaceDelimitedClaims: buildSpaceDelimitedClaims(nil),
+						},
+					},
+					"origins-1": {
+						Issuer: "https://idp.example.com",
+						JwksSourceSpecifier: &envoy_jwt.JwtProvider_LocalJwks{
+							LocalJwks: &core.DataSource{
+								Specifier: &core.DataSource_InlineString{
+									InlineString: "jwks-idp",
+								},
+							},
+						},
+						Forward:           false,
+						PayloadInMetadata: "payload",
+						NormalizePayloadInMetadata: &envoy_jwt.JwtProvider_NormalizePayload{
+							SpaceDelimitedClaims: buildSpaceDelimitedClaims(nil),
+						},
+					},
+				},
+				BypassCorsPreflight: true,
+			},
+		},
+		{
+			name: "Multiple JWT rules, mixed OPTIONAL then IGNORED — OR(P1, AND(OR(P1, allow_missing), OR(P2, allow_missing_or_failed)))",
+			in: []*v1beta1.JWTRule{
+				{
+					Issuer:   "https://scope.example.com",
+					Jwks:     "jwks-scope",
+					Presence: v1beta1.JWTRule_OPTIONAL,
+				},
+				{
+					Issuer:   "https://idp.example.com",
+					Jwks:     "jwks-idp",
+					Presence: v1beta1.JWTRule_IGNORED,
+				},
+			},
+			expected: &envoy_jwt.JwtAuthentication{
+				Rules: []*envoy_jwt.RequirementRule{
+					{
+						Match: &route.RouteMatch{
+							PathSpecifier: &route.RouteMatch_Prefix{
+								Prefix: "/",
+							},
+						},
+						RequirementType: &envoy_jwt.RequirementRule_Requires{
+							Requires: &envoy_jwt.JwtRequirement{
+								RequiresType: &envoy_jwt.JwtRequirement_RequiresAny{
+									RequiresAny: &envoy_jwt.JwtRequirementOrList{
+										Requirements: []*envoy_jwt.JwtRequirement{
+											// Outer OR shortcut: only the OPTIONAL provider participates.
+											{
+												RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
+													ProviderName: "origins-0",
+												},
+											},
+											{
+												RequiresType: &envoy_jwt.JwtRequirement_RequiresAll{
+													RequiresAll: &envoy_jwt.JwtRequirementAndList{
+														Requirements: []*envoy_jwt.JwtRequirement{
+															{
+																RequiresType: &envoy_jwt.JwtRequirement_RequiresAny{
+																	RequiresAny: &envoy_jwt.JwtRequirementOrList{
+																		Requirements: []*envoy_jwt.JwtRequirement{
+																			{
+																				RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
+																					ProviderName: "origins-0",
+																				},
+																			},
+																			{
+																				RequiresType: &envoy_jwt.JwtRequirement_AllowMissing{
+																					AllowMissing: &emptypb.Empty{},
+																				},
+																			},
+																		},
+																	},
+																},
+															},
+															{
+																RequiresType: &envoy_jwt.JwtRequirement_RequiresAny{
+																	RequiresAny: &envoy_jwt.JwtRequirementOrList{
+																		Requirements: []*envoy_jwt.JwtRequirement{
+																			{
+																				RequiresType: &envoy_jwt.JwtRequirement_ProviderName{
+																					ProviderName: "origins-1",
+																				},
+																			},
+																			{
+																				RequiresType: &envoy_jwt.JwtRequirement_AllowMissingOrFailed{
+																					AllowMissingOrFailed: &emptypb.Empty{},
+																				},
+																			},
+																		},
+																	},
+																},
+															},
+														},
+													},
 												},
 											},
 										},

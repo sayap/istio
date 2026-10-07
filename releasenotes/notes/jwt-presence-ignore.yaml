@@ -1,0 +1,20 @@
+apiVersion: release-notes/v2
+
+kind: feature
+area: security
+issue:
+  - https://github.com/istio/istio/issues/43982
+
+releaseNotes:
+- |
+  **Added** `IGNORED` value to the `presence` field of `JWTRule` in `RequestAuthentication`.
+  A request with a missing or failed token is no longer rejected, so verification can be
+  introduced on existing services without failures impairing traffic.
+- |
+  **Added** `failedStatusInMetadata` field to `JWTRule` in `RequestAuthentication`.
+  When set to `true`, a verification failure is written to dynamic metadata as
+  `filter_metadata["envoy.filters.http.jwt_authn"]["istio_jwt_verification_failure"] = {code, message}`,
+  so failures stay observable even when the request is not rejected, such as when `presence` is `IGNORED`.
+  In a dry-run with `presence: IGNORED`, `code: 1` ("Jwt is missing") marks requests that would only be
+  rejected under `presence: REQUIRED`; `code >= 2` marks requests that would be rejected under `OPTIONAL`
+  or `REQUIRED`. `code` values are Envoy enum ordinals and may change across Envoy upgrades; match on `message`.
